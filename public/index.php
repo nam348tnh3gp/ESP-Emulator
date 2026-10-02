@@ -243,6 +243,9 @@ const $ = id => document.getElementById(id);
 const STOP = {stop:true};
 const esc = s => String(s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
 
+/* ⚠ FIX: AsyncFunction constructor cho trình biên dịch động */
+const AsyncFunction = Object.getPrototypeOf(async function(){}).constructor;
+
 /* ==========================================================================
    1. CẤU HÌNH BOARD
    ========================================================================== */
@@ -894,7 +897,7 @@ class OLEDSim{
   clearDisplay(){ this.ctx.fillStyle='#000'; this.ctx.fillRect(0,0,this.w,this.h); }
   display(){ renderOLED(); }
   _c(c){ return (c === 0 || c === 'SSD1306_BLACK') ? '#000' : '#fff'; }
-  drawPixel(x,y,c){ this.ctx.fillStyle = this._c(c===undefined?1:c); this.ctx.fillRect(x|0, y|0, 1, 1); }
+  drawPixel(x,y,c){ this.ctx.fillStyle=this._c(c===undefined?1:c); this.ctx.fillRect(x|0, y|0, 1, 1); }
   drawLine(x0,y0,x1,y1,c){ this.ctx.strokeStyle=this._c(c===undefined?1:c); this.ctx.lineWidth=1;
     this.ctx.beginPath(); this.ctx.moveTo(x0+.5,y0+.5); this.ctx.lineTo(x1+.5,y1+.5); this.ctx.stroke(); }
   drawRect(x,y,w,h,c){ this.ctx.strokeStyle=this._c(c===undefined?1:c); this.ctx.lineWidth=1;
@@ -1083,7 +1086,6 @@ function convFields(s, names){
 }
 
 function processClassBody(cls, body){
-  /* tách thành các mảnh: chữ ký + thân { ... } */
   const parts = []; let cur = '', depth = 0;
   for(let i=0;i<body.length;i++){
     const ch = body[i];
@@ -1097,7 +1099,6 @@ function processClassBody(cls, body){
   }
   if(cur.trim()) parts.push({sig:cur, block:null});
 
-  /* thu thập tên phương thức */
   const methods = [], fields = [];
   for(const p of parts){
     if(p.block === null) continue;
@@ -1124,12 +1125,10 @@ function processClassBody(cls, body){
     }
 
     let block = p.block;
-    /* gọi phương thức nội bộ không có this. */
     if(methods.length){
       const re = new RegExp(`(?<![\\w.$])(${methods.map(x=>x.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')).join('|')})\\s*\\(`, 'g');
       block = block.replace(re, 'this.$1(');
     }
-    /* truy cập trường không có this. */
     if(fields.length){
       const re = new RegExp(`(?<![\\w.$])(${fields.map(x=>x.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')).join('|')})\\b(?!\\s*\\()`, 'g');
       block = block.replace(re, 'this.$1');
@@ -1170,10 +1169,8 @@ function transpile(src){
   });
   const unstr = s => s.replace(/\u0000(\d+)\u0000/g, (m,i)=>strs[+i]);
 
-  /* bỏ chú thích */
   c = c.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
 
-  /* tiền xử lý */
   c = c.replace(/^\s*#\s*include[^\n]*$/gm, '');
   c = c.replace(/^\s*#\s*define\s+(\w+)\s*\(([^)]*)\)\s*([^\n]*)$/gm,
       (m,n,a,b)=>`const ${n} = (${cleanArgs(a)}) => (${b.trim()});`);
@@ -1181,7 +1178,6 @@ function transpile(src){
       (m,n,v)=> v.trim() ? `const ${n} = ${v.trim()};` : `const ${n} = 1;`);
   c = c.replace(/^\s*#\s*(?:if|ifdef|ifndef|else|elif|endif|pragma|undef|error|warning|line)[^\n]*$/gm, '');
 
-  /* enum */
   c = c.replace(/\benum\s+\w*\s*\{([^}]*)\}\s*;?/g, (m, body)=>{
     let i = 0, out = [];
     body.split(',').forEach(p=>{
@@ -1195,15 +1191,12 @@ function transpile(src){
     return out.join('\n');
   });
 
-  /* class / struct */
   const classNames = [];
   c = transformClasses(c, classNames);
 
-  /* bỏ const / static / volatile … */
   c = c.replace(/\b(?:volatile|static|extern|inline|constexpr|PROGMEM|IRAM_ATTR|ICACHE_RAM_ATTR)\b\s*/g, '');
   c = c.replace(/\bconst\s+(?=[A-Za-z_])/g, '');
 
-  /* hàm */
   const fns = [];
   const fnRe = new RegExp(`^([ \\t]*)(?:void|${TYPES})\\s+\\*?\\s*(\\w+)\\s*\\(([^;{]*)\\)\\s*\\{`, 'gm');
   c = c.replace(fnRe, (m, ind, name, args)=>{
@@ -1212,7 +1205,6 @@ function transpile(src){
     return ind + 'async function ' + name + '(' + cleanArgs(args) + '){';
   });
 
-  /* khởi tạo đối tượng thư viện */
   const allClasses = [...new Set([...LIB_CLASSES, ...classNames])];
   if(allClasses.length){
     const N = allClasses.map(x=>x.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')).join('|');
@@ -1221,22 +1213,17 @@ function transpile(src){
     c = c.replace(new RegExp(`\\b(${N})\\s+(\\w+)\\s*=`, 'g'), 'let $2 =');
   }
 
-  /* khai báo biến */
   c = c.replace(new RegExp(`\\b${TYPES}\\b\\s*\\*?\\s*&?\\s*(?=[A-Za-z_]\\w*\\s*(?:=|;|,|\\[|\\)))`, 'g'), 'let ');
   c = c.replace(/^\s*([A-Z][A-Za-z_0-9]*)\s+([A-Za-z_]\w*)\s*=/gm, 'let $2 =');
 
-  /* mảng */
   c = c.replace(/let (\w+)\s*\[[^\]]*\]\s*=\s*\{([^}]*)\}/g, 'let $1 = [$2]');
   c = c.replace(/let (\w+)\s*\[\s*(\d*)\s*\]\s*;/g, 'let $1 = [];');
 
-  /* for-each */
   c = c.replace(/\bfor\s*\(\s*(?:auto|int|const\s+auto|const)\s*&?\s*(\w+)\s*:\s*([^)]+)\)/g, 'for (let $1 of $2)');
 
-  /* ép kiểu */
   c = c.replace(/\((?:int|long|byte|uint\d+_t|int\d+_t)\)\s*/g, '~~');
   c = c.replace(/\((?:float|double)\)\s*/g, '');
 
-  /* thay thế cú pháp */
   c = c.replace(/\bnullptr\b|\bNULL\b/g, 'null');
   c = c.replace(/->/g, '.').replace(/::/g, '.');
   c = c.replace(/\bF\s*\(/g, '(');
@@ -1246,11 +1233,9 @@ function transpile(src){
   c = c.replace(/(\w+)\.equals\(/g, '($1 == ');
   c = c.replace(/(?<=[(,]\s*)&(?=[A-Za-z_])/g, '');
 
-  /* địa chỉ hàm trong attachInterrupt */
   c = c.replace(/\bfor\s*\(\s*;\s*;\s*\)/g, 'for (;;await tick())');
   c = c.replace(/\bwhile\s*\(/g, 'while (await tick(),');
 
-  /* await cho hàm người dùng */
   if(fns.length){
     const N = [...new Set(fns)].map(x=>x.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')).join('|');
     c = c.replace(new RegExp(`(?<!function\\s)(?<![\\w.$])(${N})\\s*\\(`, 'g'), 'await $1(');
@@ -1351,7 +1336,6 @@ function makeEnv(){
     LED_BUILTIN:B.alias.LED_BUILTIN ?? 2,
     LED_RED:B.alias.LED_BUILTIN ?? 2, LED_BLUE:B.alias.LED_BLUE ?? 2,
 
-    /* --- GPIO --- */
     pinMode:(p, m) => { pm[p] = m; if(m === 2 && pv[p] === undefined) pv[p] = 1; upd(p); },
     digitalWrite: setPinVal,
     digitalRead: p => pv[p] ?? (pm[p] === 2 ? 1 : 0),
@@ -1377,7 +1361,6 @@ function makeEnv(){
     pulseIn:(p, state, t) => dev.dist * 58 + Math.floor(Math.random()*20),
     pulseInLong:(p, state, t) => dev.dist * 58,
 
-    /* --- LEDC --- */
     ledcSetup:(ch, f, bits) => { ledc[ch] = {bits:bits, freq:f}; return f; },
     ledcAttachPin:(p, ch) => { (ledc[ch] = ledc[ch] || {bits:8}).pin = p; pm[p] = 1; },
     ledcAttach:(p, f, bits) => { ledc[p] = {pin:p, bits:bits}; pm[p] = 1; return true; },
@@ -1386,7 +1369,6 @@ function makeEnv(){
     ledcDetachPin: p => { delete ledc[p]; },
     ledcFade:() => {},
 
-    /* --- Thời gian --- */
     delay: wait,
     delayMicroseconds: us => wait(us/1000),
     yieldFn: () => wait(0),
@@ -1394,7 +1376,6 @@ function makeEnv(){
     micros: () => (Date.now() - t0) * 1000,
     tick,
 
-    /* --- Toán --- */
     random:(a, b) => b === undefined ? Math.floor(Math.random()*a) : a + Math.floor(Math.random()*(b-a)),
     randomSeed:() => {},
     map:(x,a,b,c,d) => Math.trunc((x-a)*(d-c)/(b-a)+c),
@@ -1419,13 +1400,11 @@ function makeEnv(){
     snprintf:(buf, n, f, ...a) => cformat(f, a),
     F: x => x,
 
-    /* --- Ngắt --- */
     attachInterrupt:(p, fn, m) => { irq[p] = {fn, m}; log('attachInterrupt GPIO' + p, 'sys'); },
     detachInterrupt: p => { delete irq[p]; },
     digitalPinToInterrupt: p => p,
     interrupts:() => {}, noInterrupts:() => {},
 
-    /* --- Serial --- */
     Serial:{
       begin: b => log('Serial @ ' + b + ' baud', 'sys'),
       print:(v, f) => { sb += fmt(v, f); },
@@ -1444,7 +1423,6 @@ function makeEnv(){
       flush:() => {}, setTimeout:() => {}, end:() => {}, availableForWrite:() => 128
     },
 
-    /* --- Wire (I2C) --- */
     Wire:{
       _a:0, begin:() => {}, setClock:() => {}, setTimeOut:() => {},
       beginTransmission(a){ this._a = a; },
@@ -1453,10 +1431,8 @@ function makeEnv(){
       write:() => 1, available:() => 0, read:() => 0, end:() => {}
     },
 
-    /* --- SPI --- */
     SPI:{ begin:() => {}, end:() => {}, transfer: v => v, setFrequency:() => {}, setDataMode:() => {} },
 
-    /* --- EEPROM --- */
     EEPROM:{
       begin:(n) => {},
       read: a => dev.eeprom[a] || 0,
@@ -1467,7 +1443,6 @@ function makeEnv(){
       commit:() => true, end:() => true, length:() => dev.eeprom.length
     },
 
-    /* --- Filesystem --- */
     LittleFS:{
       begin:() => true, format:() => { dev.fs = {}; return true; },
       exists: p => dev.fs[p] !== undefined,
@@ -1482,7 +1457,6 @@ function makeEnv(){
       remove: p => { delete dev.fs[p]; return true; }
     },
 
-    /* --- WiFi --- */
     WiFi:{
       mode:() => {},
       disconnect:() => { wifi = {on:false, ip:'0.0.0.0'}; ui(); },
@@ -1511,7 +1485,6 @@ function makeEnv(){
       macAddress_AP:() => '24:6F:28:AA:BB:CC'
     },
 
-    /* --- ESP --- */
     ESP:{
       getFreeHeap:() => B.heap - Math.floor(Math.random()*3000),
       getHeapSize:() => B.heap,
@@ -1531,17 +1504,14 @@ function makeEnv(){
     esp_restart:() => { throw STOP; },
     esp_get_free_heap_size:() => B.heap - 4096,
 
-    /* --- FreeRTOS (giả lập) --- */
     xTaskCreate:(fn, name, stack, param, prio, handle) => { log('Tạo task: ' + name, 'sys'); return 1; },
     vTaskDelay: ms => wait(ms),
     xTaskGetTickCount:() => Math.floor((Date.now()-t0)/1000*1000),
     pdMS_TO_TICKS: ms => Math.round(ms),
 
-    /* --- Âm thanh --- */
     tone:(p, f, d) => tone(p, f, d),
     noTone: p => noTone(p),
 
-    /* --- Thư viện --- */
     Adafruit_NeoPixel:NeoPixelSim,
     Servo:ServoSim,
     ESP32Servo:ServoSim,
@@ -1559,7 +1529,6 @@ function makeEnv(){
     LittleFS_File:FileSim
   };
 
-  /* Ghi đè WiFi để dùng các lớp đã định nghĩa */
   env.WiFiClient = WiFiClientSim;
   env.HTTPClient = HTTPClientSim;
   env.WebServer = WebServerSim;
@@ -2007,7 +1976,6 @@ $('rx').onkeydown = e => { if(e.key === 'Enter') sendRx(); };
 
 /* Vòng cập nhật */
 setInterval(() => {
-  /* ADC + đồ thị */
   let a = dev.adc;
   if(dev.noise) a += (Math.random()-0.5) * B.adcMax * 0.02;
   a = Math.max(0, Math.min(B.adcMax, a));
@@ -2028,7 +1996,6 @@ setInterval(() => {
   x.lineTo(w, h); x.lineTo(0, h); x.closePath(); x.fillStyle = grd; x.fill();
   $('adcv').textContent = Math.round(a) + ' / ' + B.adcMax + '  (' + (a/B.adcMax*100).toFixed(1) + '%)';
 
-  /* Chips */
   const s = Math.floor((Date.now() - t0)/1000);
   $('c-up').textContent = run ? s + 's' : '0s';
   $('c-lp').textContent = loops > 9999 ? (loops/1000).toFixed(1) + 'k' : loops;
